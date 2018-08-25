@@ -164,3 +164,30 @@ def loadImages(image_filepaths):
     img = PIL.Image.open(image_filepath)
     training_data[i,:,:,0] = np.asarray(img, dtype=np.uint8)
   return training_data
+
+
+# Generic function to split a list into parts using a binary search for edges.
+# It assumes that all identical elements are adjacent.
+# func is a function to run on list to get the value we want to compare
+# eqlf is the equality function
+# [1,1,1,2,2,2,3,4,4,5] -> [[[1,1,1],1],[[2,2,2],2],[[3],3],[[4,4],4],[[5],5]]
+def split_by_fun(lst, func, eqlf, mindepth=0):
+  def rec(start_val, end_val, lst, depth):
+
+    if mindepth > depth or not eqlf(start_val, end_val):
+      mid = (len(lst) - 1) // 2
+
+      mid_val = func(lst[mid])
+      r_start = rec(start_val, mid_val, lst[:mid + 1], depth+1)
+
+      mid += 1
+      mid_val = func(lst[mid])
+      r_end = rec(mid_val, end_val, lst[mid:], depth+1)
+      if eqlf(r_start[-1][1], r_end[0][1]):
+        r_start[-1][0].extend(r_end[0][0])
+        return r_start + r_end[1:]
+      else:
+        return r_start + r_end
+    else:
+      return [(lst, start_val)]
+  return rec(func(lst[0]), func(lst[-1]), lst, 0)

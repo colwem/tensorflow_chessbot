@@ -121,8 +121,10 @@ def chunk(l, n):
         yield l[i:i + n]
 
 
-def dedup(imgs, lst):
-    return imgs
+def is_dup(a, b):
+    c = a - b
+    max_ave_diff = np.max(np.apply_over_axes(np.average, c, [0, 1]))
+    return max_ave_diff < 0.001
 
 
 def get_tiles(img, corners):
@@ -139,37 +141,80 @@ def piece_list_to_fen(lst):
 def main(args):
     # Load image from filepath or URL
     # Initialize predictor, takes a while, but only needed once
+    predictor = ChessboardPredictor()
+    # Load image from file
+    # open dir, loop through files
+    table = []
+    fns = list(filter(lambda x: os.path.splitext(x)[1] == '.jpg', os.listdir(args.dirpath)))
+
+    for fn_list in chunk(fns[:1000], 200):
+        path_list = [os.path.join(args.dirpath, path) for path in fn_list]
+
+        # prepare image objects
+        img_list = [load_image_from_path(path) for path in path_list]
+        img_list = [np.asarray(img.convert("L"), dtype=np.float32) for img in img_list]
+
+        # find chessboard corners
+        def eqlf(a, b):
+            if a is None:
+                if b is None:
+                    return True
+                return False
+            elif b is None:
+                return False
+            return (a == b).all()
+
+        corner_groups = split_by_fun(img_list, find_chessboard_corners, eqlf, mindepth=1)
+        print('len cg bf ', len(corner_groups))
+        print('corners ', corner_groups[0][1])
+
+        corner_groups = list(filter(lambda x: x[1] is not None, corner_groups))
+        print('len cg af ', len(corner_groups))
+        if len(corner_groups):
+            # extract tiles, returns N elements of 64 tiles
+            tiled = [get_tiles(img, corners) for imgs, corners in corner_groups for img in imgs]
+            print('len tl bf ', len(tiled))
+
+            # dedup tiles
+            current = 0
+            new_tiled = [tiled[0]]
+            new_path_list = [path_list[0]]
+            for i in range(1, len(tiled) - 1):
+                if not is_dup(tiled[current], tiled[i]):
+                    current = i
+                    new_tiled.append(tiled[current])
+                    new_path_list.append(path_list[current])
+            tiled, path_list = new_tiled, new_path_list
+            print('len tl af ', len(tiled))
+
+            if len(tiled):
+                # tiled, _, path_list =\
+                #     zip((tiled[0], 0, path_list[0]),\
+                #         *filter(lambda x: not is_dup(x[0], x[1]), zip(tiled, tiled[1:], path_list[1:])))
+
+                tiles = np.concatenate(tiled, 2)
+                # tiled, path_list = dedup(tiled, path_list)
+
+                # predictions
+                pieces, certainties = predictor.get_predictions(tiles)
+
+                # convert predictions into fens
+                fens = map(lambda l: shortenFEN(piece_list_to_fen(l)), chunk(pieces, 64))
+
+                # Use the worst case certainty as our final uncertainty score
+                certainties = [c.min() for c in chunk(certainties, 64)]
+
+                # write fen, certainty and file paths to csv file
+                table.extend(zip(fens, certainties, path_list))
+
+    # from itertools import groupby
+    # print('l tab bf ', len(table))
+    # table = [list(g)[0] for k, g in groupby(table, lambda x: x[0])]
+    # print('l tab af ', len(table))
+
     with open('fens.csv', 'w') as fenCsvFile:
         writer = csv.writer(fenCsvFile, dialect='excel')
-        predictor = ChessboardPredictor()
-        # Load image from file
-        # open dir, loop through files
-
-        for path_list in chunk(os.listdir(args.dirpath), 100):
-
-            img_list = [load_image_from_path(os.path.join(args.dirpath, path)) for path in path_list]
-            img_list = [np.asarray(img.convert("L"), dtype=np.float32) for img in img_list]
-
-            corner_groups = split_by_fun(img_list, find_chessboard_corners, lambda x, y: (x == y).all(), mindepth=4)
-
-            tiled = [get_tiles(img, corners) for imgs, corners in corner_groups for img in imgs]
-            tiles = np.concatenate(tiled, 2)
-            # tiled, path_list = dedup(tiled, path_list)
-
-            # Resize image if too large
-            # img = helper_image_loading.resizeAsNeeded(img)
-
-            pieces, certainties = predictor.get_predictions(tiles)
-            fens = map(lambda l: shortenFEN(piece_list_to_fen(l)), chunk(pieces, 64))
-            certainties = [c.min() for c in chunk(certainties, 64)]
-            table = zip(fens, certainties, path_list)
-            print(list(table))
-            # short_fens = [shortenFEN(fen) for fen in fens]
-            # # Use the worst case certainty as our final uncertainty score
-            # certainty = tile_certainties.min()
-            # # writer.writerow(['', short_fen, certainty, fn])
-            # print(short_fens)
-            # print('.', end='', flush=True)
+        writer.writerows(table)
 
 
     predictor.close()

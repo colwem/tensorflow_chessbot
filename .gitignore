@@ -20,3 +20,9 @@ praw.ini
 !requirements.txt
 
 !readme_images/*
+
+# Ignore pytest cache
+.pytest_cache/
+
+# Ignore python setuptools stuff
+*.egg-info/

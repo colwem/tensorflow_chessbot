@@ -198,5 +198,4 @@ def split_by_fun(lst, func=None, eqlf=None, mindepth=0):
     else:
       return [((start, end), start_val)]
 
-  r = rec(func(lst[0]), func(lst[-1]), 0, len(lst) - 1, 0)
-  return [(lst[start:end + 1], val) for ((start, end), val) in r]
+  return rec(func(lst[0]), func(lst[-1]), 0, len(lst) - 1, 0)

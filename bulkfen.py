@@ -43,10 +43,10 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'  # Ignore Tensorflow INFO debug messages
 import tensorflow as tf
 import numpy as np
+import cv2
 import csv
 
 from helper_functions import shortenFEN
-from  helper_image_loading import loadImageFromPath as load_image_from_path
 from chessboard_finder import findChessboardCorners as find_chessboard_corners, getChessTilesGray as get_chess_tiles_gray
 from helper_functions import split_by_fun
 from helper_video import get_video_array
@@ -127,6 +127,36 @@ def is_dup(a, b):
     max_ave_diff = np.max(np.apply_over_axes(np.average, c, [0, 1]))
     return max_ave_diff < 0.001
 
+def convert_to_chessboard(vid, corner_group):
+    # img is a grayscale image
+    # corners = (x0, y0, x1, y1) for top-left corner to bot-right corner of board
+    start, end = corner_group[0]
+    length = vid.shape[0]
+
+    corners = corner_group[1]
+
+    height, width = vid.shape[1:3]
+
+    # corners could be outside image bounds, pad image as needed
+    padl_x = max(0, -corners[0])
+    padl_y = max(0, -corners[1])
+    padr_x = max(0, corners[2] - width)
+    padr_y = max(0, corners[3] - height)
+
+    vid_padded = np.pad(vid, ((0, 0), (padl_y, padr_y), (padl_x, padr_x)), mode='edge')
+
+    chessboard_vid = vid_padded[:,
+    (padl_y + corners[1]):(padl_y + corners[3]),
+    (padl_x + corners[0]):(padl_x + corners[2])]
+
+    # 256x256 px image, 32x32px individual tiles
+    # Normalized
+
+    resized = np.zeros((length, 256, 256))
+    for i in range(start, end):
+        resized[i] = cv2.resize(chessboard_vid[i], (256, 256))
+
+    return resized
 
 def get_tiles(img, corners):
     return get_chess_tiles_gray(img, corners)
@@ -146,7 +176,7 @@ def get_corner_groups(vid):
             return False
         return (a == b).all()
 
-    corner_groups = split_by_fun(img_array, find_chessboard_corners, eqlf, mindepth=0)
+    corner_groups = split_by_fun(vid, find_chessboard_corners, eqlf, mindepth=0)
     print('len cg bf ', len(corner_groups))
     print('corners ', corner_groups[0][1])
 
@@ -154,6 +184,81 @@ def get_corner_groups(vid):
     print('len cg af ', len(corner_groups))
     return corner_groups
 
+
+def convert_to_tiles(vid):
+    # shape (N, height, width) -> (N, file, rank, height, width)
+    # shape (N,    256,   256) -> (N,    8,    8,     32,    32)
+    N = vid.shape[0]
+    r = np.zeros((N, 8, 8, 32, 32))
+    for i in range(N):
+        for j in range(8):
+            for k in range(8):
+                h_start = (32 * j)
+                h_end = (32 * (j + 1))
+                w_start = (32 * k)
+                w_end = (32 * (k + 1))
+                r[i,j,k] = vid[i, h_start:h_end, w_start:w_end]
+    return r
+
+def find_motion_events(vid):
+
+    N = vid.shape[0]
+
+    bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
+    event_window = []
+    event_list = []
+    num_frames_post_event = 0
+    event_start = None
+
+    kernel_size = 1
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    min_event_len = 5
+    post_event_len = 2
+    threshold = 0.15
+
+    # curr_state = 'no_event'     # 'no_event', 'in_event', or 'post_even
+    in_stillness_event = False
+
+
+    # Motion event scanning/detection loop.
+    for i in range(N):
+        frame_gray = vid[i]
+
+        frame_filt = bg_subtractor.apply(frame_gray)
+        frame_score = np.sum(frame_filt) / float(frame_filt.shape[0] * frame_filt.shape[1])
+        event_window.append(frame_score)
+        event_window = event_window[-min_event_len:]
+
+        if in_stillness_event:
+            # in event or post event, write all queued frames to file,
+            # and write current frame to file.
+            # if the current frame doesn't meet the threshold, increment
+            # the current scene's post-event counter.
+            if frame_score <= threshold:
+                num_frames_post_event = 0
+            else:
+                num_frames_post_event += 1
+                if num_frames_post_event >= post_event_len:
+                    in_stillness_event = False
+                    event_end = i
+                    event_duration = i - event_start
+                    event_list.append((event_start, event_end, event_duration))
+        else:
+            if len(event_window) >= min_event_len and all(
+                    score <= threshold for score in event_window):
+                in_stillness_event = True
+                event_window = []
+                num_frames_post_event = 0
+                event_start = i
+
+    # If we're still in a motion event, we still need to compute the duration
+    # and ending timecode and add it to the event list.
+    if in_stillness_event:
+        event_end = i
+        event_duration = i - event_start
+        event_list.append((event_start, event_end, event_duration))
+
+    return event_list
 
 ###########################################################
 # MAIN CLI
@@ -166,12 +271,19 @@ def main(args):
     # open dir, loop through files
     table = []
 
-    for img_array, frames in get_video_array(args.filepath, 500):
+    for vid, frames in get_video_array(args.filepath, 500):
 
-        corner_groups = get_corner_groups(img_array)
+        corner_groups = get_corner_groups(vid)
 
         if len(corner_groups):
             # extract tiles, returns N elements of 64 tiles
+            for corner_group in corner_groups:
+                board_vid = convert_to_chessboard(vid, corner_group)
+                tile_vid = convert_to_tiles(board_vid)
+                events = [[find_motion_events(tile_vid[:, i, j, :, :]) for j in range(8)] for i in range(8)]
+                print(events)
+
+            exit()
             tiled = [get_tiles(img, corners) for imgs, corners in corner_groups for img in imgs]
             print('len tl bf ', len(tiled))
 

@@ -49,6 +49,7 @@ from helper_functions import shortenFEN
 from  helper_image_loading import loadImageFromPath as load_image_from_path
 from chessboard_finder import findChessboardCorners as find_chessboard_corners, getChessTilesGray as get_chess_tiles_gray
 from helper_functions import split_by_fun
+from helper_video import get_video_array
 
 def load_graph(frozen_graph_filepath):
     # Load and parse the protobuf file to retrieve the unserialized graph_def.
@@ -135,6 +136,25 @@ def piece_list_to_fen(lst):
         raise Exception("length of piece list is not 64")
     return '/'.join([''.join(lst[i * 8:(i + 1) * 8]) for i in reversed(range(8))])
 
+
+def get_corner_groups(vid):
+    # find chessboard corners
+    def eqlf(a, b):
+        if a is None or b is None:
+            if a is None and b is None:
+                return True
+            return False
+        return (a == b).all()
+
+    corner_groups = split_by_fun(img_array, find_chessboard_corners, eqlf, mindepth=0)
+    print('len cg bf ', len(corner_groups))
+    print('corners ', corner_groups[0][1])
+
+    corner_groups = list(filter(lambda x: x[1] is not None, corner_groups))
+    print('len cg af ', len(corner_groups))
+    return corner_groups
+
+
 ###########################################################
 # MAIN CLI
 
@@ -145,31 +165,11 @@ def main(args):
     # Load image from file
     # open dir, loop through files
     table = []
-    fns = list(filter(lambda x: os.path.splitext(x)[1] == '.jpg', os.listdir(args.dirpath)))
 
-    for fn_list in chunk(fns[:1000], 200):
-        path_list = [os.path.join(args.dirpath, path) for path in fn_list]
+    for img_array, frames in get_video_array(args.filepath, 500):
 
-        # prepare image objects
-        img_list = [load_image_from_path(path) for path in path_list]
-        img_list = [np.asarray(img.convert("L"), dtype=np.float32) for img in img_list]
+        corner_groups = get_corner_groups(img_array)
 
-        # find chessboard corners
-        def eqlf(a, b):
-            if a is None:
-                if b is None:
-                    return True
-                return False
-            elif b is None:
-                return False
-            return (a == b).all()
-
-        corner_groups = split_by_fun(img_list, find_chessboard_corners, eqlf, mindepth=1)
-        print('len cg bf ', len(corner_groups))
-        print('corners ', corner_groups[0][1])
-
-        corner_groups = list(filter(lambda x: x[1] is not None, corner_groups))
-        print('len cg af ', len(corner_groups))
         if len(corner_groups):
             # extract tiles, returns N elements of 64 tiles
             tiled = [get_tiles(img, corners) for imgs, corners in corner_groups for img in imgs]
@@ -178,13 +178,13 @@ def main(args):
             # dedup tiles
             current = 0
             new_tiled = [tiled[0]]
-            new_path_list = [path_list[0]]
+            new_frames = [frames[0]]
             for i in range(1, len(tiled) - 1):
                 if not is_dup(tiled[current], tiled[i]):
                     current = i
                     new_tiled.append(tiled[current])
-                    new_path_list.append(path_list[current])
-            tiled, path_list = new_tiled, new_path_list
+                    new_frames.append(frames[current])
+            tiled, frames = new_tiled, new_frames
             print('len tl af ', len(tiled))
 
             if len(tiled):
@@ -205,7 +205,7 @@ def main(args):
                 certainties = [c.min() for c in chunk(certainties, 64)]
 
                 # write fen, certainty and file paths to csv file
-                table.extend(zip(fens, certainties, path_list))
+                table.extend(zip(fens, certainties, frames))
 
     # from itertools import groupby
     # print('l tab bf ', len(table))
@@ -224,6 +224,7 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='Predict a chessboard FENs from supplied directory of local images')
-    parser.add_argument('--dirpath', required=True, help='dirpath to find images to process')
+    parser.add_argument('-f', '--filepath', required=True, help='path to video to process')
     args = parser.parse_args()
     main(args)
+

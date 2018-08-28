@@ -171,23 +171,32 @@ def loadImages(image_filepaths):
 # func is a function to run on list to get the value we want to compare
 # eqlf is the equality function
 # [1,1,1,2,2,2,3,4,4,5] -> [[[1,1,1],1],[[2,2,2],2],[[3],3],[[4,4],4],[[5],5]]
-def split_by_fun(lst, func, eqlf, mindepth=0):
-  def rec(start_val, end_val, lst, depth):
+def split_by_fun(lst, func=None, eqlf=None, mindepth=0):
+
+  if func is None:
+    func = lambda x: x
+
+  if eqlf is None:
+    eqlf = lambda x, y: x == y
+
+  def rec(start_val, end_val, start, end, depth):
 
     if mindepth > depth or not eqlf(start_val, end_val):
-      mid = (len(lst) - 1) // 2
+      mid = (start + end) // 2
 
       mid_val = func(lst[mid])
-      r_start = rec(start_val, mid_val, lst[:mid + 1], depth+1)
+      r_start = rec(start_val, mid_val, start, mid, depth+1)
 
       mid += 1
       mid_val = func(lst[mid])
-      r_end = rec(mid_val, end_val, lst[mid:], depth+1)
+      r_end = rec(mid_val, end_val, mid, end, depth+1)
       if eqlf(r_start[-1][1], r_end[0][1]):
-        r_start[-1][0].extend(r_end[0][0])
+        r_start[-1] = ((r_start[-1][0][0], r_end[0][0][1]), r_start[-1][1])
         return r_start + r_end[1:]
       else:
         return r_start + r_end
     else:
-      return [(lst, start_val)]
-  return rec(func(lst[0]), func(lst[-1]), lst, 0)
+      return [((start, end), start_val)]
+
+  r = rec(func(lst[0]), func(lst[-1]), 0, len(lst) - 1, 0)
+  return [(lst[start:end + 1], val) for ((start, end), val) in r]

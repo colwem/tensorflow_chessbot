@@ -1,6 +1,6 @@
 
 from helper_functions import split_by_fun
-from helper_video import get_video_array
+from video_helpers import get_video_array
 import numpy as np
 
 def test_split_by_fun():

@@ -46,10 +46,14 @@ import numpy as np
 import cv2
 import csv
 
-from helper_functions import shortenFEN
-from chessboard_finder import findChessboardCorners as find_chessboard_corners, getChessTilesGray as get_chess_tiles_gray
-from helper_functions import split_by_fun
-from helper_video import get_video_array
+from helper_functions import flatten, split_by_fun
+from chessboard_finder import findChessboardCorners as get_corners
+from video_helpers import VideoContainer, show_together
+from motion import find_stillness_events, make_mask
+from chess_helpers import board_arrays_to_svgs, board_arrays_to_fens
+from itertools import groupby
+
+
 
 def load_graph(frozen_graph_filepath):
     # Load and parse the protobuf file to retrieve the unserialized graph_def.
@@ -96,23 +100,18 @@ class ChessboardPredictor(object):
             feed_dict={self.x: validation_set, self.keep_prob: 1.0})
 
         # Prediction bounds
-        a = np.array(list(map(lambda x: x[0][x[1]], zip(guess_prob, guessed))))
-        labelIndex2Name = lambda label_index: ' KQRBNPkqrbnp'[label_index]
-        pieceNames = list(map(lambda k: '1' if k == 0 else labelIndex2Name(k), guessed))  # exchange ' ' for '1' for FEN
-        return pieceNames, a
-
-
-        # tile_certainties = a.reshape([8, 8])[::-1, :]
-        #
-        # # Convert guess into FEN string
-        # # guessed is tiles A1-H8 rank-order, so to make a FEN we just need to flip the files from 1-8 to 8-1
-        # labelIndex2Name = lambda label_index: ' KQRBNPkqrbnp'[label_index]
-        # pieceNames = list(map(lambda k: '1' if k == 0 else labelIndex2Name(k), guessed))  # exchange ' ' for '1' for FEN
-        # fen = '/'.join([''.join(pieceNames[i * 8:(i + 1) * 8]) for i in reversed(range(8))])
+        certainty = [x[0][x[1]] for x in zip(guess_prob, guessed)]
+        return zip(guessed, certainty)
 
     def close(self):
         print("Closing session.")
         self.sess.close()
+
+### Piece Formating
+
+
+
+## Utility functions
 
 
 def chunk(l, n):
@@ -122,18 +121,30 @@ def chunk(l, n):
         yield l[i:i + n]
 
 
-def is_dup(a, b):
-    c = a - b
-    max_ave_diff = np.max(np.apply_over_axes(np.average, c, [0, 1]))
-    return max_ave_diff < 0.001
+def start_time(str):
+    import time
+    time = time.time()
+    print('{} timer started'.format(str))
+    return time
 
-def convert_to_chessboard(vid, corner_group):
+
+def end_time(str, start_time):
+    import time
+    now = time.time()
+    duration = now - start_time
+    print('{} completed in {:.2f}s'.format(str, duration))
+
+
+### Heavy logic
+
+
+def video_to_board(vid, corner_group):
     # img is a grayscale image
     # corners = (x0, y0, x1, y1) for top-left corner to bot-right corner of board
-    start, end = corner_group[0]
+    start, end = corner_group[0], corner_group[1]
     length = vid.shape[0]
 
-    corners = corner_group[1]
+    corners = corner_group[2]
 
     height, width = vid.shape[1:3]
 
@@ -143,125 +154,163 @@ def convert_to_chessboard(vid, corner_group):
     padr_x = max(0, corners[2] - width)
     padr_y = max(0, corners[3] - height)
 
-    vid_padded = np.pad(vid, ((0, 0), (padl_y, padr_y), (padl_x, padr_x)), mode='edge')
+    # vid_padded = np.pad(vid, ((0, 0), (padl_y, padr_y), (padl_x, padr_x)), mode='edge')
 
-    chessboard_vid = vid_padded[:,
+    chessboard_vid = vid[:,
     (padl_y + corners[1]):(padl_y + corners[3]),
     (padl_x + corners[0]):(padl_x + corners[2])]
 
     # 256x256 px image, 32x32px individual tiles
     # Normalized
 
-    resized = np.zeros((length, 256, 256))
-    for i in range(start, end):
+    resized = np.empty((length, 256, 256))
+    for i in range(start, end + 1):
         resized[i] = cv2.resize(chessboard_vid[i], (256, 256))
 
     return resized
 
-def get_tiles(img, corners):
-    return get_chess_tiles_gray(img, corners)
 
-def piece_list_to_fen(lst):
-    if len(lst) != 64:
-        raise Exception("length of piece list is not 64")
-    return '/'.join([''.join(lst[i * 8:(i + 1) * 8]) for i in reversed(range(8))])
+# shape (N, height, width) -> (N, file, rank, height, width)
+# shape (N,    256,   256) -> (N,    8,    8,     32,    32)
+def board_to_squares(board):
+    N_frames = board.shape[0]
+    squares = np.empty((N_frames, 8, 8, 32, 32))
+    for frame in range(N_frames):
+        for file in range(8):
+            for rank in range(8):
+                h_start = (32 * file)
+                h_end = (32 * (file + 1))
+                w_start = (32 * rank)
+                w_end = (32 * (rank + 1))
+                squares[frame, file, rank] = board[frame, h_start:h_end, w_start:w_end]
+    return squares
+
+def display(img, name='image'):
+    cv2.imshow(name, img.astype('uint8'))
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+def get_events_from_corner_group(corner_group, vid):
+    board_vid = video_to_board(vid, corner_group)
+    fmask, bmask, mmask = make_mask(board_vid)
+    avg = np.max(bmask, (1, 2))
+    # for i in range(len(board_vid)):
+    #     if avg[i] > 1:
+            # print(i, avg[i])
+
+    for i in range(400, len(board_vid)):
+        cv2.imshow('board', board_vid[i].astype('uint8'))
+        cv2.imshow('mmask', mmask[i].clip(0,255).astype('uint8'))
+        cv2.imshow('bmask', bmask[i].astype('uint8'))
+        cv2.imshow('fmask', fmask[i].astype('uint8'))
+        cv2.moveWindow('board', 0,0)
+        cv2.moveWindow('bmask', 400,0)
+        cv2.moveWindow('mmask', 400,350)
+        cv2.moveWindow('fmask', 0,350)
+        # print(i)
+
+        k = cv2.waitKey(30) & 0xff
+        if k == 27:
+            break
+    exit()
+    # squares_vid = board_to_squares(board_vid)
+
+    def get_square(file, rank):
+        start_x, end_x = 32 * file, 32 * (file + 1)
+        start_y, end_y = 32 * rank, 32 * (rank + 1)
+        r = board_vid[:, start_y:end_y, start_x:end_x]
+        return r
+
+    def prep_event(start, end, file, rank):
+        mid = (start + end) // 2
+        sqr = get_square(file, rank)[mid].copy()
+        return start, end, file, rank, sqr
+
+    events = [prep_event(start, end, file, rank)
+              for rank in range(8)
+              for file in range(8)
+              for start, end in find_stillness_events(get_square(file, rank), file, rank)]
+
+    # for start, end, file, rank, sqr in events:
+    #     display(sqr, name="{},{} {} - {}".format(file, rank, start, end))
+
+    return events
+
+
+def update_frame_numbers(events, initial_frame_number):
+    return [(start + initial_frame_number, end + initial_frame_number, file, rank, img)
+            for start, end, file, rank, img in events]
+
+
+def eqlf(a, b):
+    if a is None or b is None:
+        if a is None and b is None:
+            return True
+        return False
+    return (a == b).all()
+
+
+def rec(vid, start_corners, end_corners, start, end, depth, min_depth=0):
+    if min_depth > depth or not eqlf(start_corners, end_corners):
+        mid = (start + end) // 2
+
+        mid_corners = get_corners(vid[mid])
+        r_start = rec(vid, start_corners, mid_corners, start, mid, depth+1)
+
+        mid += 1
+        mid_corners = get_corners(vid[mid])
+        r_end = rec(vid, mid_corners, end_corners, mid, end, depth+1)
+
+        if eqlf(r_start[-1][2], r_end[0][2]):
+            r_start[-1] = (r_start[-1][0], r_end[0][1], r_start[-1][2])
+            return r_start + r_end[1:]
+        else:
+            return r_start + r_end
+    else:
+        return [(start, end, start_corners)]
 
 
 def get_corner_groups(vid):
     # find chessboard corners
-    def eqlf(a, b):
-        if a is None or b is None:
-            if a is None and b is None:
-                return True
-            return False
-        return (a == b).all()
+    corner_groups = rec(vid, get_corners(vid[0]), get_corners(vid[-1]), 0, len(vid) - 1, 0)
 
-    corner_groups = split_by_fun(vid, find_chessboard_corners, eqlf, mindepth=0)
-    print('len cg bf ', len(corner_groups))
-    print('corners ', corner_groups[0][1])
-
-    corner_groups = list(filter(lambda x: x[1] is not None, corner_groups))
-    print('len cg af ', len(corner_groups))
+    corner_groups = [c for c in corner_groups if c[1] is not None]
     return corner_groups
 
 
-def convert_to_tiles(vid):
-    # shape (N, height, width) -> (N, file, rank, height, width)
-    # shape (N,    256,   256) -> (N,    8,    8,     32,    32)
-    N = vid.shape[0]
-    r = np.zeros((N, 8, 8, 32, 32))
-    for i in range(N):
-        for j in range(8):
-            for k in range(8):
-                h_start = (32 * j)
-                h_end = (32 * (j + 1))
-                w_start = (32 * k)
-                w_end = (32 * (k + 1))
-                r[i,j,k] = vid[i, h_start:h_end, w_start:w_end]
-    return r
-
-def find_motion_events(vid):
-
-    N = vid.shape[0]
-
-    bg_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
-    event_window = []
-    event_list = []
-    num_frames_post_event = 0
-    event_start = None
-
-    kernel_size = 1
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    min_event_len = 5
-    post_event_len = 2
-    threshold = 0.15
-
-    # curr_state = 'no_event'     # 'no_event', 'in_event', or 'post_even
-    in_stillness_event = False
+def get_events_from_vid(vid, initial_frame_number):
+    events = [get_events_from_corner_group(corner_group, vid)
+              for corner_group in get_corner_groups(vid)
+              if corner_group[1] is not None]
+    events = flatten(events)
+    events = update_frame_numbers(events, initial_frame_number)
+    return events
 
 
-    # Motion event scanning/detection loop.
-    for i in range(N):
-        frame_gray = vid[i]
+def apply_piece_predictions_to_events(events, predictor, batch_size=1000):
+    batches = chunk(events, batch_size)
 
-        frame_filt = bg_subtractor.apply(frame_gray)
-        frame_score = np.sum(frame_filt) / float(frame_filt.shape[0] * frame_filt.shape[1])
-        event_window.append(frame_score)
-        event_window = event_window[-min_event_len:]
+    def process(batch):
+        length = len(batch)
+        x = np.empty((32, 32, length))
+        for i in range(length):
+            x[:, :, i] = batch[i][4]
+        x = x / 255
+        return [(start, end, file, rank, piece, certainty)
+                for ((start, end, file, rank, _), (piece, certainty))
+                in zip(batch, predictor.get_predictions(x))]
+    return flatten([process(batch) for batch in batches])
 
-        if in_stillness_event:
-            # in event or post event, write all queued frames to file,
-            # and write current frame to file.
-            # if the current frame doesn't meet the threshold, increment
-            # the current scene's post-event counter.
-            if frame_score <= threshold:
-                num_frames_post_event = 0
-            else:
-                num_frames_post_event += 1
-                if num_frames_post_event >= post_event_len:
-                    in_stillness_event = False
-                    event_end = i
-                    event_duration = i - event_start
-                    event_list.append((event_start, event_end, event_duration))
-        else:
-            if len(event_window) >= min_event_len and all(
-                    score <= threshold for score in event_window):
-                in_stillness_event = True
-                event_window = []
-                num_frames_post_event = 0
-                event_start = i
 
-    # If we're still in a motion event, we still need to compute the duration
-    # and ending timecode and add it to the event list.
-    if in_stillness_event:
-        event_end = i
-        event_duration = i - event_start
-        event_list.append((event_start, event_end, event_duration))
-
-    return event_list
 
 ###########################################################
 # MAIN CLI
+
+
+def insert_break(val):
+    return val
+
 
 def main(args):
     # Load image from filepath or URL
@@ -269,55 +318,40 @@ def main(args):
     predictor = ChessboardPredictor()
     # Load image from file
     # open dir, loop through files
-    table = []
+    processing_time = start_time("Processing")
+    time = start_time("Event creation")
+    events = []
+    i = 0
+    video_container = VideoContainer(args.filepath)
+    processed = 0
+    for vid, initial_frame in video_container.get_video_array(chunk_size=1000):
+        events.append(get_events_from_vid(vid, initial_frame))
+        processed += len(vid)
+        break
 
-    for vid, frames in get_video_array(args.filepath, 500):
+    events = flatten(events)
+    print("number of events: ", len(events))
+    end_time('Event Creation', time)
 
-        corner_groups = get_corner_groups(vid)
+    time = start_time("Predictions")
+    events = apply_piece_predictions_to_events(events, predictor)
+    end_time("Predictions", time)
 
-        if len(corner_groups):
-            # extract tiles, returns N elements of 64 tiles
-            for corner_group in corner_groups:
-                board_vid = convert_to_chessboard(vid, corner_group)
-                tile_vid = convert_to_tiles(board_vid)
-                events = [[find_motion_events(tile_vid[:, i, j, :, :]) for j in range(8)] for i in range(8)]
-                print(events)
 
-            exit()
-            tiled = [get_tiles(img, corners) for imgs, corners in corner_groups for img in imgs]
-            print('len tl bf ', len(tiled))
+    board_arrays = np.zeros((processed, 8, 8), dtype='uint8') + 20
+    for start, end, file, rank, piece_code, certainty in events:
+        board_arrays[start:end + 1, file, rank] = piece_code
 
-            # dedup tiles
-            current = 0
-            new_tiled = [tiled[0]]
-            new_frames = [frames[0]]
-            for i in range(1, len(tiled) - 1):
-                if not is_dup(tiled[current], tiled[i]):
-                    current = i
-                    new_tiled.append(tiled[current])
-                    new_frames.append(frames[current])
-            tiled, frames = new_tiled, new_frames
-            print('len tl af ', len(tiled))
+    time = start_time("Write Video")
+    show_together(args.filepath, board_arrays, 850)
+    end_time("Write Video", time)
 
-            if len(tiled):
-                # tiled, _, path_list =\
-                #     zip((tiled[0], 0, path_list[0]),\
-                #         *filter(lambda x: not is_dup(x[0], x[1]), zip(tiled, tiled[1:], path_list[1:])))
+    np.set_printoptions(edgeitems=4)
 
-                tiles = np.concatenate(tiled, 2)
-                # tiled, path_list = dedup(tiled, path_list)
+    end_time('Processing', processing_time)
 
-                # predictions
-                pieces, certainties = predictor.get_predictions(tiles)
-
-                # convert predictions into fens
-                fens = map(lambda l: shortenFEN(piece_list_to_fen(l)), chunk(pieces, 64))
-
-                # Use the worst case certainty as our final uncertainty score
-                certainties = [c.min() for c in chunk(certainties, 64)]
-
-                # write fen, certainty and file paths to csv file
-                table.extend(zip(fens, certainties, frames))
+    predictor.close()
+    exit()
 
     # from itertools import groupby
     # print('l tab bf ', len(table))
@@ -329,7 +363,6 @@ def main(args):
         writer.writerows(table)
 
 
-    predictor.close()
 
 if __name__ == '__main__':
     np.set_printoptions(suppress=True, precision=3)

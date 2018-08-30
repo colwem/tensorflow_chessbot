@@ -171,7 +171,7 @@ def loadImages(image_filepaths):
 # func is a function to run on list to get the value we want to compare
 # eqlf is the equality function
 # [1,1,1,2,2,2,3,4,4,5] -> [[[1,1,1],1],[[2,2,2],2],[[3],3],[[4,4],4],[[5],5]]
-def split_by_fun(lst, func=None, eqlf=None, mindepth=0):
+def split_by_fun(lst, func=None, eqlf=None, min_depth=0):
 
   if func is None:
     func = lambda x: x
@@ -181,7 +181,7 @@ def split_by_fun(lst, func=None, eqlf=None, mindepth=0):
 
   def rec(start_val, end_val, start, end, depth):
 
-    if mindepth > depth or not eqlf(start_val, end_val):
+    if min_depth > depth or not eqlf(start_val, end_val):
       mid = (start + end) // 2
 
       mid_val = func(lst[mid])
@@ -197,5 +197,10 @@ def split_by_fun(lst, func=None, eqlf=None, mindepth=0):
         return r_start + r_end
     else:
       return [((start, end), start_val)]
+  r = rec(func(lst[0]), func(lst[-1]), 0, len(lst) - 1, 0)
+  del lst
+  return r
 
-  return rec(func(lst[0]), func(lst[-1]), 0, len(lst) - 1, 0)
+
+def flatten(lst, depth=1):
+  return [item for sublist in lst for item in sublist]

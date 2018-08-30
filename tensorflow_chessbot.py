@@ -125,7 +125,9 @@ class ChessboardPredictor(object):
     if tiles is None:
       print('Couldn\'t find chessboard in image')
       return result
-    
+
+
+
     # Make prediction on input tiles
     fen, tile_certainties = self.getPrediction(tiles)
     
@@ -178,7 +180,17 @@ def main(args):
     print("\n--- Prediction on url %s ---" % args.url)
   else:
     print("\n--- Prediction on file %s ---" % args.filepath)
-  
+
+  def display(img, name='image'):
+    import cv2
+    cv2.imshow(name, img.astype('uint8'))
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+  for tile in tiles:
+      print(tile)
+      display(tile)
+
   # Initialize predictor, takes a while, but only needed once
   predictor = ChessboardPredictor()
   fen, tile_certainties = predictor.getPrediction(tiles)

@@ -204,3 +204,8 @@ def split_by_fun(lst, func=None, eqlf=None, min_depth=0):
 
 def flatten(lst, depth=1):
   return [item for sublist in lst for item in sublist]
+
+
+def streamify(fun, *streams):
+    for vals in zip(*streams):
+        yield fun(*vals)

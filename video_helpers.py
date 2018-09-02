@@ -232,18 +232,26 @@ def tile(tiles, start_at=0, end_at=0,
         y += h + padding
 
     if add_frame_num:
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        bottomLeftCornerOfText = (10, title_bar_height - 3)
-        fontScale = 1
-        fontColor = (10, 10, 10)
-        lineType = 2
-
         for i in range(len(tiled)):
-            cv2.putText(tiled[i], str(i + start_at),
-                        bottomLeftCornerOfText,
-                        font,
-                        fontScale,
-                        fontColor,
-                        lineType)
+            apply_number(tiled[i], i + start_at, (10, title_bar_height - 3))
+
     return tiled
 
+
+
+def apply_number(frame, num, loc=(0,0)):
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    bottomLeftCornerOfText = loc
+    fontScale = 1
+    fontColor = (10, 10, 10)
+    lineType = 2
+
+    cv2.putText(frame, str(num),
+                bottomLeftCornerOfText,
+                font,
+                fontScale,
+                fontColor,
+                lineType)
+
+    return frame

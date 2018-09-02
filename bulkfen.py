@@ -46,14 +46,15 @@ import numpy as np
 import cv2
 import csv
 
-from helper_functions import flatten, split_by_fun
+from helper_functions import flatten, split_by_fun, streamify
 from chessboard_finder import findChessboardCorners as get_corners
-from video_helpers import VideoContainer, Viewer,\
+from video_helpers import VideoContainer, Viewer, apply_number,\
     show_together, board_arrays_to_mp4,\
     print_stream, overlay_video, render_svgs
 from motion import find_stillness_events, make_mask
 from chess_helpers import board_arrays_to_svgs, board_arrays_to_fens
-from itertools import groupby
+from itertools import groupby, count
+from functools import partial
 
 
 def load_graph(frozen_graph_filepath):
@@ -297,7 +298,7 @@ def main(args):
     i = 0
     video_container = VideoContainer(args.filepath)
     processed = 0
-    for vid, initial_frame in video_container.get_video_array(chunk_size=1000):
+    for vid, initial_frame in video_container.get_video_array(start_at=0, end_at=500):
         events.append(get_events_from_vid(vid, initial_frame))
         processed += len(vid)
         print("batch processed")
@@ -319,10 +320,14 @@ def main(args):
     # board_arrays_to_mp4(board_arrays)
     # show_together(args.filepath, board_arrays, 550)
 
-    video_stream = VideoContainer(args.filepath).stream()
     svgs = board_arrays_to_svgs(board_arrays)
     rendered_svgs = render_svgs(svgs)
+
+    video_stream = VideoContainer(args.filepath).stream()
+
     out_stream = overlay_video(video_stream, rendered_svgs, (0, 0))
+    out_stream = streamify(partial(apply_number, loc=(20,300)), out_stream, count())
+
     print_stream('file.avi', out_stream, view_while_writing=True)
 
     end_time("Write Video", time)

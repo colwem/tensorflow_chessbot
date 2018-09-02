@@ -48,11 +48,12 @@ import csv
 
 from helper_functions import flatten, split_by_fun
 from chessboard_finder import findChessboardCorners as get_corners
-from video_helpers import VideoContainer, show_together
+from video_helpers import VideoContainer, Viewer,\
+    show_together, board_arrays_to_mp4,\
+    print_stream, overlay_video, render_svgs
 from motion import find_stillness_events, make_mask
 from chess_helpers import board_arrays_to_svgs, board_arrays_to_fens
 from itertools import groupby
-
 
 
 def load_graph(frozen_graph_filepath):
@@ -102,18 +103,15 @@ class ChessboardPredictor(object):
         # Prediction bounds
         certainty = [x[0][x[1]] for x in zip(guess_prob, guessed)]
         return zip(guessed, certainty)
+    """
 
+    """
     def close(self):
         print("Closing session.")
         self.sess.close()
 
-### Piece Formating
-
-
-
-## Utility functions
-
-
+# Piece Formating
+# Utility functions
 def chunk(l, n):
     # For item i in a range that is a length of l,
     for i in range(0, len(l), n):
@@ -185,52 +183,27 @@ def board_to_squares(board):
                 squares[frame, file, rank] = board[frame, h_start:h_end, w_start:w_end]
     return squares
 
-def display(img, name='image'):
-    cv2.imshow(name, img.astype('uint8'))
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
 def get_events_from_corner_group(corner_group, vid):
     board_vid = video_to_board(vid, corner_group)
-    fmask, bmask, mmask = make_mask(board_vid)
-    avg = np.max(bmask, (1, 2))
-    # for i in range(len(board_vid)):
-    #     if avg[i] > 1:
-            # print(i, avg[i])
-
-    for i in range(400, len(board_vid)):
-        cv2.imshow('board', board_vid[i].astype('uint8'))
-        cv2.imshow('mmask', mmask[i].clip(0,255).astype('uint8'))
-        cv2.imshow('bmask', bmask[i].astype('uint8'))
-        cv2.imshow('fmask', fmask[i].astype('uint8'))
-        cv2.moveWindow('board', 0,0)
-        cv2.moveWindow('bmask', 400,0)
-        cv2.moveWindow('mmask', 400,350)
-        cv2.moveWindow('fmask', 0,350)
-        # print(i)
-
-        k = cv2.waitKey(30) & 0xff
-        if k == 27:
-            break
-    exit()
+    mask = make_mask(board_vid)
+    print('mask made')
     # squares_vid = board_to_squares(board_vid)
 
-    def get_square(file, rank):
+    def get_square(vid, file, rank):
         start_x, end_x = 32 * file, 32 * (file + 1)
         start_y, end_y = 32 * rank, 32 * (rank + 1)
-        r = board_vid[:, start_y:end_y, start_x:end_x]
+        r = vid[:, start_y:end_y, start_x:end_x]
         return r
 
     def prep_event(start, end, file, rank):
         mid = (start + end) // 2
-        sqr = get_square(file, rank)[mid].copy()
+        sqr = get_square(board_vid, file, rank)[mid].copy()
         return start, end, file, rank, sqr
 
     events = [prep_event(start, end, file, rank)
               for rank in range(8)
               for file in range(8)
-              for start, end in find_stillness_events(get_square(file, rank), file, rank)]
+              for start, end in find_stillness_events(get_square(mask, file, rank), file, rank)]
 
     # for start, end, file, rank, sqr in events:
     #     display(sqr, name="{},{} {} - {}".format(file, rank, start, end))
@@ -327,7 +300,7 @@ def main(args):
     for vid, initial_frame in video_container.get_video_array(chunk_size=1000):
         events.append(get_events_from_vid(vid, initial_frame))
         processed += len(vid)
-        break
+        print("batch processed")
 
     events = flatten(events)
     print("number of events: ", len(events))
@@ -343,7 +316,15 @@ def main(args):
         board_arrays[start:end + 1, file, rank] = piece_code
 
     time = start_time("Write Video")
-    show_together(args.filepath, board_arrays, 850)
+    # board_arrays_to_mp4(board_arrays)
+    # show_together(args.filepath, board_arrays, 550)
+
+    video_stream = VideoContainer(args.filepath).stream()
+    svgs = board_arrays_to_svgs(board_arrays)
+    rendered_svgs = render_svgs(svgs)
+    out_stream = overlay_video(video_stream, rendered_svgs, (0, 0))
+    print_stream('file.avi', out_stream, view_while_writing=True)
+
     end_time("Write Video", time)
 
     np.set_printoptions(edgeitems=4)
@@ -372,4 +353,3 @@ if __name__ == '__main__':
     parser.add_argument('-f', '--filepath', required=True, help='path to video to process')
     args = parser.parse_args()
     main(args)
-

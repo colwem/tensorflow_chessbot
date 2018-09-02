@@ -1,33 +1,53 @@
 import cv2
 import numpy as np
+from video_helpers import tile
 from functools import reduce
 
 #history 30 threshold 3 misses all events
 #history 30 threshold 1 misses all events
 #history 60 threshold 1 misses 2
 
-
-def make_mask(vid, kernel_size=3):
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-
-    def get(v):
-        subtractor = cv2.createBackgroundSubtractorMOG2(200, detectShadows=False)
-        return [cv2.morphologyEx(subtractor.apply(frame), cv2.MORPH_OPEN, kernel)
-                for frame in v]
-
-    # kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    f = np.array(get(vid))
-    b = np.array(list(reversed(get(reversed(vid)))))
-    mask = np.asarray([cv2.bitwise_and(f[i], b[i]) for i in range(len(vid))])
-
-    return f, b, mask
+from video_helpers import Viewer
 
 
-def find_stillness_events(squares, file, rank, min_event_len=2, post_event_len=1, threshold=1):
+def difference_mask(v, threshold=15, kernel_size=3):
 
-    n = squares.shape[0]
+    open_kernel = np.ones(kernel_size * kernel_size).reshape((kernel_size, kernel_size))
+    v = v.astype('float32')
+    mask = np.zeros((v.shape), dtype='float32')
 
-    bg_subtractor = cv2.createBackgroundSubtractorMOG2(100, 16, detectShadows=False)
+    # Compute difference
+    mask[1:] = v[:-1] - v[1:]
+    mask[0] = mask[1]
+
+    # Make positive
+    mask = mask**2
+
+    # Create mask from threshold
+    mask[mask >= threshold] = 255
+    mask[mask < threshold] = 0
+
+    # Remove noise
+    mask[:] = [cv2.morphologyEx(frame,
+                                cv2.MORPH_OPEN,
+                                open_kernel) for frame in mask]
+
+    return mask.astype('uint8')
+
+
+def make_mask(vid):
+    vid = vid.astype('uint8')
+
+    mask = difference_mask(vid)
+    # tiled = tile([[vid, mask]], start_at=0)
+    # v = Viewer('p', (0,0))
+    # v.play(tiled, True, 30, loop=True)
+
+    return mask
+
+def find_stillness_events(mask, file, rank, min_event_len=1, post_event_len=2, threshold=0.1):
+
+    n = mask.shape[0]
     event_window = []
     event_list = []
     num_frames_post_event = 0
@@ -46,25 +66,16 @@ def find_stillness_events(squares, file, rank, min_event_len=2, post_event_len=1
     motion_event_end = None
 
     frame_width = 4
+    scores = mask.sum((1, 2))
+
+    # frame_viewer = Viewer('frame', (0,0))
     for i in range(n):
-        # bottom = squares[max(0, i - frame_width)]
-        # top = squares[i]
-        # score = np.sum(np.abs(top - bottom)) / (32 * 32)
-        #
-        frame_gray = squares[i]
-        frame_filt = bg_subtractor.apply(frame_gray)
-        if file == 2 and rank == 1 and i > 400:
-            cv2.imshow('square', frame_gray.astype('uint8'))
-            cv2.imshow('frame_filt', frame_filt.astype('uint8'))
-            print(i)
+        score = scores[i]
+        # if file == 2 and rank == 1 and i > 0:
+        #     frame_viewer.update_frame(mask[i], 60)
+        #     print(i)
 
-        k = cv2.waitKey(30) & 0xff
-        if k == 27:
-            break
-
-
-        frame_score = np.sum(frame_filt) / float(frame_filt.shape[0] * frame_filt.shape[1])
-        event_window.append(frame_score)
+        event_window.append(score)
         event_window = event_window[-min_event_len:]
 
         if in_motion_event:
@@ -72,34 +83,23 @@ def find_stillness_events(squares, file, rank, min_event_len=2, post_event_len=1
             # and write current frame to file.
             # if the current frame doesn't meet the threshold, increment
             # the current scene's post-event counter.
-            if frame_score >= threshold:
+            if score >= threshold:
                 num_frames_post_event = 0
-                motion_score_min = min(motion_score_min, frame_score)
-                motion_score_max = max(motion_score_max, frame_score)
+                motion_score_min = min(motion_score_min, score)
+                motion_score_max = max(motion_score_max, score)
             else:
                 num_frames_post_event += 1
                 if num_frames_post_event >= post_event_len:
                     in_motion_event = False
                     stillness_event_start = i
-                    motion_event_end = i
-
-                    # print_motion_event(
-                    #     motion_event_start,
-                    #     motion_event_end,
-                    #     motion_score_max,
-                    #     motion_score_min)
 
         else:
             if len(event_window) >= min_event_len and all(
                     score >= threshold for score in event_window):
-                motion_event_start = i
-                motion_score_max = frame_score
-                motion_score_min = frame_score
                 stillness_event_end = i - min_event_len
                 if stillness_event_end != stillness_event_start:
                     event_list.append((stillness_event_start, stillness_event_end))
                 in_motion_event = True
-                motion_event_start = i
                 event_window = []
                 num_frames_post_event = 0
 
@@ -112,7 +112,8 @@ def find_stillness_events(squares, file, rank, min_event_len=2, post_event_len=1
     return event_list
 
 
-def print_motion_event( motion_event_start, motion_event_end, motion_score_max, motion_score_min):
+def print_motion_event(motion_event_start, motion_event_end,
+                       motion_score_max, motion_score_min):
 
     fm_str = '''
 Motion Event
@@ -131,3 +132,17 @@ Min Score: {}
         motion_score_max,
         motion_score_min))
 
+
+def background_subtraction_mask(v):
+    open_kernel = np.ones((3, 3), np.uint8)
+    dilate_kernel = np.ones((5, 5), np.uint8)
+
+    subtractor = cv2.createBackgroundSubtractorMOG2(10, detectShadows=False)
+    return [
+        cv2.dilate(
+            cv2.morphologyEx(
+                subtractor.apply(frame),
+                cv2.MORPH_OPEN,
+                open_kernel),
+            dilate_kernel)
+        for frame in v]

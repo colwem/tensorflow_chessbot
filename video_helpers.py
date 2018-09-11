@@ -12,7 +12,7 @@ class VideoContainer(object):
         self._current_frame = 0
         self._initialize_capture(self.fn)
 
-    def get_video_array(self, start_at=0, end_at=None, chunk_size=None):
+    def get_video_array(self, start_at=0, end_at=None, chunk_size=None, overlap=0):
         if not end_at:
             end_at = self.frame_count
         total_frames = end_at - start_at
@@ -20,16 +20,25 @@ class VideoContainer(object):
         if not chunk_size:
             chunk_size = total_frames
 
-        n = total_frames // chunk_size
+        overlap_array = []
+        n = (total_frames // chunk_size) + 1
         self.seek_to(start_at)
         for i in range(n):
             current_frame_start = self._current_frame
             length = min(total_frames - i * chunk_size, chunk_size)
             buf = np.empty((length, self.frame_height, self.frame_width), dtype=np.float32)
 
-            for j in range(length):
+            overlap_error = overlap
+            if i == 0:
+                overlap_error = 0
+            else:
+                buf[:overlap] = overlap_array
+
+            for j in range(length - overlap_error):
                 r = self.read()
-                buf[j] = cv2.cvtColor(r, cv2.COLOR_BGR2GRAY)
+                buf[j + overlap_error] = cv2.cvtColor(r, cv2.COLOR_BGR2GRAY)
+            overlap_array = buf[-overlap:]
+
             yield buf, current_frame_start
 
     def get_frame_at(self, frame_number):
@@ -54,12 +63,14 @@ class VideoContainer(object):
 
     def seek_to(self, frame):
         if self._current_frame < frame:
-            while self._current_frame < frame - 1:
+            while self._current_frame < frame:
                 self.read()
         else:
             self._reinitialize()
             for _ in range(frame - 1):
                 self.read(0)
+
+        return self
 
     def read(self):
         self._current_frame += 1

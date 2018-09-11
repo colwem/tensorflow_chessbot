@@ -104,12 +104,12 @@ class ChessboardPredictor(object):
         # Prediction bounds
         certainty = [x[0][x[1]] for x in zip(guess_prob, guessed)]
         return zip(guessed, certainty)
-    """
 
-    """
+
     def close(self):
         print("Closing session.")
         self.sess.close()
+
 
 # Piece Formating
 # Utility functions
@@ -249,14 +249,14 @@ def get_corner_groups(vid):
     # find chessboard corners
     corner_groups = rec(vid, get_corners(vid[0]), get_corners(vid[-1]), 0, len(vid) - 1, 0)
 
-    corner_groups = [c for c in corner_groups if c[1] is not None]
+    corner_groups = [c for c in corner_groups if c[2] is not None]
     return corner_groups
 
 
 def get_events_from_vid(vid, initial_frame_number):
     events = [get_events_from_corner_group(corner_group, vid)
               for corner_group in get_corner_groups(vid)
-              if corner_group[1] is not None]
+              if corner_group[2] is not None]
     events = flatten(events)
     events = update_frame_numbers(events, initial_frame_number)
     return events
@@ -277,6 +277,45 @@ def apply_piece_predictions_to_events(events, predictor, batch_size=1000):
     return flatten([process(batch) for batch in batches])
 
 
+def concatenate_identical_predictions(events):
+
+    def compress(e1, e2):
+        return (e1[0],
+                e2[1],
+                *e1[2:])
+
+    def is_duplicate(e1, e2):
+        start, end, file, rank, piece_code, certainty = zip(e1, e2)
+
+        both_equal = lambda p: p[0] == p[1]
+        return both_equal(file) \
+               and both_equal(rank) \
+               and both_equal(piece_code) \
+               and end[0] <= start[1]
+
+    def dedup(events):
+        deduped = []
+        i = 0
+        events = list(events)
+        length = len(events)
+        while i < length:
+            j = 1
+            while i + j < length and is_duplicate(events[i], events[i+j]):
+                j += 1
+            if j > 1:
+                deduped.append(compress(events[i], events[i+j-1]))
+            else:
+                deduped.append(events[i])
+            i += j
+
+        return deduped
+
+    sorted_events = sorted(events, key=lambda e: (e[2], e[3], e[0], e[1]))
+    groups = groupby(sorted_events, key=lambda e: (e[2], e[3]))
+
+    return flatten([dedup(group) for key, group in groups])
+
+
 
 ###########################################################
 # MAIN CLI
@@ -295,10 +334,14 @@ def main(args):
     processing_time = start_time("Processing")
     time = start_time("Event creation")
     events = []
-    i = 0
     video_container = VideoContainer(args.filepath)
     processed = 0
-    for vid, initial_frame in video_container.get_video_array(start_at=0, end_at=500):
+    start_at = 0
+    end_at = video_container.length
+    for vid, initial_frame in video_container.get_video_array(start_at=start_at,
+                                                              end_at=end_at,
+                                                              chunk_size=1000,
+                                                              overlap=1):
         events.append(get_events_from_vid(vid, initial_frame))
         processed += len(vid)
         print("batch processed")
@@ -311,11 +354,17 @@ def main(args):
     events = apply_piece_predictions_to_events(events, predictor)
     end_time("Predictions", time)
 
-
+    events = concatenate_identical_predictions(events)
+    print("number of events after dedup: ", len(events))
+    print("processed: ", processed)
     board_arrays = np.zeros((processed, 8, 8), dtype='uint8') + 20
     for start, end, file, rank, piece_code, certainty in events:
-        board_arrays[start:end + 1, file, rank] = piece_code
+        board_arrays[start - start_at:end - start_at + 1, file, rank] = piece_code
 
+    deduped = [x[0] for x in groupby(board_arrays_to_fens(board_arrays))]
+
+    print(deduped)
+    exit()
     time = start_time("Write Video")
     # board_arrays_to_mp4(board_arrays)
     # show_together(args.filepath, board_arrays, 550)
@@ -323,7 +372,7 @@ def main(args):
     svgs = board_arrays_to_svgs(board_arrays)
     rendered_svgs = render_svgs(svgs)
 
-    video_stream = VideoContainer(args.filepath).stream()
+    video_stream = VideoContainer(args.filepath).stream(start_at)
 
     out_stream = overlay_video(video_stream, rendered_svgs, (0, 0))
     out_stream = streamify(partial(apply_number, loc=(20,300)), out_stream, count())
